@@ -1,0 +1,6 @@
+{
+  "name": "Study Buddy",
+  "description": "AI-powered study companion with RAG note Q&A, Feynman explanations, adaptive quizzes, and mastery tracking dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
