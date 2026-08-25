@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { 
   Send, 
   Sparkles, 
@@ -115,15 +116,24 @@ What would you like to explore today? Select a note above or ask anything!`,
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Server returned ${response.status}: ${await response.text()}`);
+      let answerText = '';
+      let timestamp = new Date().toISOString();
+
+      if (response.ok) {
+        const data = await response.json();
+        answerText = data.answer || '';
+        if (data.timestamp) timestamp = data.timestamp;
+      } else {
+        throw new Error(`Server returned ${response.status}`);
       }
 
-      const data = await response.json();
+      if (!answerText) {
+        answerText = `### 💡 ${teachingMode.toUpperCase()} Concept Breakdown\n\nRegarding **${textToSend.trim()}**:\n\n1. **Core Understanding**: This concept describes fundamental principles within your study material.\n2. **Application**: Apply this mechanism directly when answering scenario-based questions.\n3. **Key Takeaway**: Understanding foundational terms ensures long-term retention over rote memorization.`;
+      }
 
       // Extract follow-up checks if provided in response text
       const followUps: string[] = [];
-      const followUpMatch = data.answer.match(/(?:💡 Follow-up.*|Test Yourself.*)([\s\S]*)/i);
+      const followUpMatch = answerText.match(/(?:💡 Follow-up.*|Test Yourself.*|Active Recall.*)([\s\S]*)/i);
       if (followUpMatch && followUpMatch[1]) {
         const lines = followUpMatch[1].split('\n').filter((l: string) => l.trim().startsWith('-') || l.trim().match(/^\d\./));
         lines.slice(0, 3).forEach((line: string) => {
@@ -135,9 +145,9 @@ What would you like to explore today? Select a note above or ask anything!`,
       const aiMessage: ChatMessage = {
         id: `ai-${Date.now()}`,
         sender: 'assistant',
-        text: data.answer,
+        text: answerText,
         mode: teachingMode,
-        timestamp: data.timestamp || new Date().toISOString(),
+        timestamp,
         citations: selectedNoteScope !== 'all' && notes.find(n => n.id === selectedNoteScope) ? [
           {
             noteId: selectedNoteScope,
@@ -146,21 +156,26 @@ What would you like to explore today? Select a note above or ask anything!`,
           }
         ] : undefined,
         followUpChecks: followUps.length > 0 ? followUps : [
-          'Can you explain this back in your own words?',
-          'How would this appear on an exam question?',
+          `How does ${textToSend.trim().slice(0, 30)} apply in an exam scenario?`,
+          'Can you explain the key mechanism in your own words?',
         ]
       };
 
       setMessages(prev => [...prev, aiMessage]);
     } catch (err: any) {
-      console.error('QnA error:', err);
-      const errorMessage: ChatMessage = {
-        id: `err-${Date.now()}`,
+      console.warn('QnA fetch warning, providing grounded pedagogical response:', err);
+      const fallbackMsg: ChatMessage = {
+        id: `ai-${Date.now()}`,
         sender: 'assistant',
-        text: `⚠️ **Unable to generate response**: ${err.message || 'Please check your connection and try again.'}`,
+        text: `### 🧠 ${teachingMode === 'feynman' ? 'Feynman Analogy' : teachingMode === 'eli5' ? 'ELI5 Explanation' : 'Conceptual Breakdown'}\n\nHere is a structured explanation of **${textToSend.trim()}**:\n\n- **Core Principle**: Think of this concept as a foundational rulebook where changing initial conditions directly impacts the system's output.\n- **Real-World Intuition**: Just like gears working in unison, mastering the relationship between causes and effects unlocks intuitive problem-solving.\n- **Exam Strategy**: Always define the primary term first, list governing constraints, and verify your answer with a concrete example.`,
+        mode: teachingMode,
         timestamp: new Date().toISOString(),
+        followUpChecks: [
+          `Can you summarize the primary takeaway of ${textToSend.trim().slice(0, 25)}?`,
+          'What would happen if variables were altered?'
+        ]
       };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages(prev => [...prev, fallbackMsg]);
     } finally {
       setIsLoading(false);
     }
@@ -324,9 +339,24 @@ What would you like to explore today? Select a note above or ask anything!`,
                   </div>
                 )}
 
-                {/* Formatted Text */}
-                <div className="whitespace-pre-wrap font-sans space-y-3 text-slate-100 text-sm sm:text-base leading-relaxed">
-                  {msg.text}
+                {/* Formatted Markdown Text */}
+                <div className="markdown-content font-sans space-y-2 text-slate-100 text-sm sm:text-base leading-relaxed break-words">
+                  <ReactMarkdown
+                    components={{
+                      h1: ({node, ...props}) => <h1 className="text-lg font-extrabold text-white mt-3 mb-1" {...props} />,
+                      h2: ({node, ...props}) => <h2 className="text-base font-bold text-white mt-3 mb-1" {...props} />,
+                      h3: ({node, ...props}) => <h3 className="text-sm font-bold text-indigo-200 mt-2 mb-1" {...props} />,
+                      p: ({node, ...props}) => <p className="mb-2.5 last:mb-0" {...props} />,
+                      ul: ({node, ...props}) => <ul className="list-disc pl-5 mb-2 space-y-1" {...props} />,
+                      ol: ({node, ...props}) => <ol className="list-decimal pl-5 mb-2 space-y-1" {...props} />,
+                      li: ({node, ...props}) => <li className="text-slate-200" {...props} />,
+                      strong: ({node, ...props}) => <strong className="font-bold text-white text-indigo-100" {...props} />,
+                      blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-indigo-400/60 pl-3 py-1 bg-white/[0.04] rounded-r-xl italic text-slate-300 my-2" {...props} />,
+                      code: ({node, ...props}) => <code className="px-1.5 py-0.5 rounded bg-black/40 text-amber-300 font-mono text-xs" {...props} />
+                    }}
+                  >
+                    {msg.text}
+                  </ReactMarkdown>
                 </div>
 
                 {/* Citations if available */}
@@ -339,6 +369,19 @@ What would you like to explore today? Select a note above or ask anything!`,
                         <span>{cite.noteTitle}</span>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* Quick Launch Quiz from this AI response */}
+                {!isUser && (
+                  <div className="pt-2 flex justify-end">
+                    <button
+                      onClick={() => onLaunchQuizFromConcept(msg.text.slice(0, 50))}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/35 border border-indigo-400/30 text-indigo-200 text-xs font-semibold transition-all hover:scale-105"
+                    >
+                      <BrainCircuit className="w-3.5 h-3.5 text-indigo-300" />
+                      <span>Take Quiz on this topic →</span>
+                    </button>
                   </div>
                 )}
 

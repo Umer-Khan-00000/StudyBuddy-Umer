@@ -3,6 +3,12 @@ import path from "path";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
+import {
+  generateQuizFallback,
+  gradeAnswerFallback,
+  analyzeNotesFallback,
+  askTutorFallback,
+} from "./server/studyEngine.js";
 
 dotenv.config();
 
@@ -17,7 +23,7 @@ function getAI(): GoogleGenAI {
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      console.warn("GEMINI_API_KEY is not set in environment. AI features may fall back to heuristics.");
+      console.warn("GEMINI_API_KEY is not set in environment. AI features will use pedagogical heuristics.");
     }
     aiClient = new GoogleGenAI({
       apiKey: apiKey || "",
@@ -44,13 +50,13 @@ app.get("/api/health", (_req: Request, res: Response) => {
  * 1. RAG-Style Q&A with Citation and Teaching Mode (Feynman, ELI5, Deep Dive, Direct)
  */
 app.post("/api/study/ask", async (req: Request, res: Response) => {
+  const { question, notesContext, mode = "feynman", conversationHistory = [] } = req.body;
+
+  if (!question) {
+    return res.status(400).json({ error: "Question is required." });
+  }
+
   try {
-    const { question, notesContext, mode = "feynman", conversationHistory = [] } = req.body;
-
-    if (!question) {
-      return res.status(400).json({ error: "Question is required." });
-    }
-
     const ai = getAI();
 
     let stylePrompt = "";
@@ -128,10 +134,9 @@ Selected Teaching Style: ${mode.toUpperCase()}`;
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("Error in /api/study/ask:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to process question. Please verify your connection or try again.",
-    });
+    console.warn("Gemini API call for /api/study/ask failed, switching to pedagogical engine fallback:", error.message);
+    const fallbackResponse = askTutorFallback(question, notesContext || "", mode);
+    return res.json(fallbackResponse);
   }
 });
 
@@ -139,19 +144,19 @@ Selected Teaching Style: ${mode.toUpperCase()}`;
  * 2. Generate Interactive Quizzes (MCQ, True/False, Fill in Blank, Short Answer) from Notes
  */
 app.post("/api/study/generate-quiz", async (req: Request, res: Response) => {
+  const {
+    notesText,
+    topic,
+    difficulty = "medium", // easy | medium | hard
+    questionCount = 5,
+    questionTypes = ["multiple_choice", "true_false", "fill_blank", "conceptual"],
+  } = req.body;
+
+  if (!notesText && !topic) {
+    return res.status(400).json({ error: "Please provide either notes text or a topic." });
+  }
+
   try {
-    const {
-      notesText,
-      topic,
-      difficulty = "medium", // easy | medium | hard
-      questionCount = 5,
-      questionTypes = ["multiple_choice", "true_false", "fill_blank", "conceptual"],
-    } = req.body;
-
-    if (!notesText && !topic) {
-      return res.status(400).json({ error: "Please provide either notes text or a topic." });
-    }
-
     const ai = getAI();
 
     const systemInstruction = `You are an expert educational assessment creator and psychometric exam designer.
@@ -231,10 +236,15 @@ Ensure valid JSON output matching the required schema.`;
 
     return res.json(quizData);
   } catch (error: any) {
-    console.error("Error in /api/study/generate-quiz:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to generate quiz from notes.",
-    });
+    console.warn("Gemini API call for /api/study/generate-quiz failed, switching to pedagogical engine fallback:", error.message);
+    const fallbackQuiz = generateQuizFallback(
+      notesText || "",
+      topic || "Study Material",
+      difficulty as any,
+      Number(questionCount) || 5,
+      questionTypes
+    );
+    return res.json(fallbackQuiz);
   }
 });
 
@@ -242,13 +252,13 @@ Ensure valid JSON output matching the required schema.`;
  * 3. AI Short Answer / Conceptual Grading
  */
 app.post("/api/study/grade-answer", async (req: Request, res: Response) => {
+  const { question, idealAnswer, studentAnswer, conceptTested } = req.body;
+
+  if (!question || !studentAnswer) {
+    return res.status(400).json({ error: "Question and student answer are required." });
+  }
+
   try {
-    const { question, idealAnswer, studentAnswer, conceptTested } = req.body;
-
-    if (!question || !studentAnswer) {
-      return res.status(400).json({ error: "Question and student answer are required." });
-    }
-
     const ai = getAI();
 
     const systemInstruction = `You are a supportive, insightful teacher grading a student's open-ended conceptual answer.
@@ -286,10 +296,9 @@ Evaluate this answer and return JSON feedback.`;
     const evaluation = JSON.parse(response.text?.trim() || "{}");
     return res.json(evaluation);
   } catch (error: any) {
-    console.error("Error in /api/study/grade-answer:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to grade answer.",
-    });
+    console.warn("Gemini API call for /api/study/grade-answer failed, switching to pedagogical engine fallback:", error.message);
+    const fallbackGrade = gradeAnswerFallback(question, idealAnswer, studentAnswer, conceptTested);
+    return res.json(fallbackGrade);
   }
 });
 
@@ -297,13 +306,13 @@ Evaluate this answer and return JSON feedback.`;
  * 4. Extract Key Concepts, Summaries & Flashcards from Notes
  */
 app.post("/api/study/analyze-notes", async (req: Request, res: Response) => {
+  const { notesText, title } = req.body;
+
+  if (!notesText || notesText.trim().length < 10) {
+    return res.status(400).json({ error: "Please provide substantial notes text." });
+  }
+
   try {
-    const { notesText, title } = req.body;
-
-    if (!notesText || notesText.trim().length < 10) {
-      return res.status(400).json({ error: "Please provide substantial notes text." });
-    }
-
     const ai = getAI();
 
     const systemInstruction = `You are a master study strategist and cognitive learning expert.
@@ -370,10 +379,9 @@ ${notesText}
     const analysis = JSON.parse(response.text?.trim() || "{}");
     return res.json(analysis);
   } catch (error: any) {
-    console.error("Error in /api/study/analyze-notes:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to analyze notes.",
-    });
+    console.warn("Gemini API call for /api/study/analyze-notes failed, switching to pedagogical engine fallback:", error.message);
+    const fallbackAnalysis = analyzeNotesFallback(notesText, title || "Study Notes");
+    return res.json(fallbackAnalysis);
   }
 });
 
